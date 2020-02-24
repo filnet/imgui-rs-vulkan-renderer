@@ -19,7 +19,7 @@ exclude = [
 [dependencies]
 log = "0.4"
 imgui = "0.3"
-ash = "0.29"
+ash = { git = "https://github.com/MaikKlein/ash" }
 ultraviolet = "0.4"
 
 [dev-dependencies]
