@@ -239,49 +239,59 @@ fn read_shader_from_source(source: &[u8]) -> RendererResult<Vec<u32>> {
     Ok(ash::util::read_spv(&mut cursor)?)
 }
 
-pub fn create_vulkan_descriptor_set(
+pub fn create_vulkan_descriptor_sets(
     device: &Device,
-    sets_layout: vk::DescriptorSetLayout,
-    texture: &texture::Texture,
-) -> RendererResult<(vk::DescriptorPool, vk::DescriptorSet)> {
-    log::debug!("Creating vulkan descriptor set");
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    count: usize,
+) -> RendererResult<(vk::DescriptorPool, Vec<vk::DescriptorSet>)> {
+    log::debug!("Creating vulkan descriptor sets");
+
     let descriptor_pool = {
         let sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: 1,
+            descriptor_count: count as u32,
         }];
         let create_info = vk::DescriptorPoolCreateInfo::builder()
             .pool_sizes(&sizes)
-            .max_sets(1);
+            .max_sets(count as u32);
         unsafe { device.create_descriptor_pool(&create_info, None)? }
     };
 
-    let set = {
-        let sets_layout = [sets_layout];
+    let descriptor_sets = {
+        let set_layouts = vec![descriptor_set_layout; count];
         let allocate_info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(descriptor_pool)
-            .set_layouts(&sets_layout);
+            .set_layouts(&set_layouts);
 
-        unsafe { device.allocate_descriptor_sets(&allocate_info)?[0] }
+        unsafe { device.allocate_descriptor_sets(&allocate_info)? }
     };
+
+    Ok((descriptor_pool, descriptor_sets))
+}
+
+pub fn update_vulkan_descriptor_set(
+    device: &Device,
+    descriptor_set: vk::DescriptorSet,
+    image_view: vk::ImageView,
+    sampler: vk::Sampler,
+) {
+    log::debug!("Updating vulkan descriptor set");
 
     unsafe {
         let image_info = [vk::DescriptorImageInfo {
-            sampler: texture.sampler,
-            image_view: texture.image_view,
+            sampler,
+            image_view,
             image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         }];
 
         let writes = [vk::WriteDescriptorSet::builder()
-            .dst_set(set)
+            .dst_set(descriptor_set)
             .dst_binding(0)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(&image_info)
             .build()];
         device.update_descriptor_sets(&writes, &[])
     }
-
-    Ok((descriptor_pool, set))
 }
 
 mod buffer {
