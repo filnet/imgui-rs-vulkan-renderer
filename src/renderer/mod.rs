@@ -5,7 +5,7 @@ use ash::{
     version::{DeviceV1_0, InstanceV1_0},
     vk, Device, Instance,
 };
-use imgui::{Context, DrawCmd, DrawCmdParams, DrawData};
+use imgui::{Context, DrawCmd, DrawCmdParams, DrawData, TextureId, Textures};
 use mesh::*;
 use ultraviolet::projection::orthographic_vk;
 use vulkan::*;
@@ -61,8 +61,9 @@ pub struct Renderer {
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     fonts_texture: Texture,
+    textures: Textures<(vk::ImageView, vk::Sampler)>,
     descriptor_pool: vk::DescriptorPool,
-    descriptor_set: vk::DescriptorSet,
+    descriptor_sets: Vec<vk::DescriptorSet>,
     in_flight_frames: usize,
     frames: Option<Frames>,
     destroyed: bool,
@@ -136,24 +137,75 @@ impl Renderer {
             )??
         };
 
-        // Descriptor set
-        let (descriptor_pool, descriptor_set) = create_vulkan_descriptor_set(
+        // Descriptor sets
+        let (descriptor_pool, descriptor_sets) =
+            create_vulkan_descriptor_sets(vk_context.device(), descriptor_set_layout, 16)?;
+
+        // Textures
+        let mut textures = Textures::new();
+
+        // Insert font texture as TextureId(0)
+        let texture_id = textures.insert((fonts_texture.image_view, fonts_texture.sampler));
+        assert!(texture_id.id() == 0);
+        update_vulkan_descriptor_set(
             vk_context.device(),
-            descriptor_set_layout,
-            &fonts_texture,
-        )?;
+            descriptor_sets[texture_id.id()],
+            fonts_texture.image_view,
+            fonts_texture.sampler,
+        );
 
         Ok(Self {
             pipeline,
             pipeline_layout,
             descriptor_set_layout,
             fonts_texture,
+            textures,
             descriptor_pool,
-            descriptor_set,
+            descriptor_sets,
             in_flight_frames,
             frames: None,
             destroyed: false,
         })
+    }
+
+    pub fn insert_texture<C: RendererVkContext>(
+        &mut self,
+        vk_context: &C,
+        image_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) -> TextureId {
+        let texture_id = self.textures.insert((image_view, sampler));
+        update_vulkan_descriptor_set(
+            vk_context.device(),
+            self.descriptor_sets[texture_id.id()],
+            image_view,
+            sampler,
+        );
+        texture_id
+    }
+
+    pub fn replace_texture<C: RendererVkContext>(
+        &mut self,
+        vk_context: &C,
+        texture_id: TextureId,
+        image_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) -> Option<(vk::ImageView, vk::Sampler)> {
+        let result = self.textures.replace(texture_id, (image_view, sampler));
+        update_vulkan_descriptor_set(
+            vk_context.device(),
+            self.descriptor_sets[texture_id.id()],
+            image_view,
+            sampler,
+        );
+        result
+    }
+
+    pub fn remove_texture<C: RendererVkContext>(
+        &mut self,
+        texture_id: TextureId,
+    ) -> Option<(vk::ImageView, vk::Sampler)> {
+        self.textures.remove(texture_id)
     }
 
     /// Record commands required to render the gui.RendererError.
@@ -199,17 +251,6 @@ impl Renderer {
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline,
-            )
-        };
-
-        unsafe {
-            vk_context.device().cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                &[self.descriptor_set],
-                &[],
             )
         };
 
@@ -259,6 +300,7 @@ impl Renderer {
 
         let mut index_offset = 0;
         let mut vertex_offset = 0;
+        let mut current_texture_id: Option<TextureId> = None;
         let clip_offset = draw_data.display_pos;
         let clip_scale = draw_data.framebuffer_scale;
         for draw_list in draw_data.draw_lists() {
@@ -269,9 +311,9 @@ impl Renderer {
                         cmd_params:
                             DrawCmdParams {
                                 clip_rect,
+                                texture_id,
                                 vtx_offset,
                                 idx_offset,
-                                ..
                             },
                     } => {
                         unsafe {
@@ -293,6 +335,25 @@ impl Renderer {
                             vk_context
                                 .device()
                                 .cmd_set_scissor(command_buffer, 0, &scissors);
+                        }
+
+                        let bind_descriptor_sets = match current_texture_id {
+                            Some(id) => texture_id != id,
+                            None => true,
+                        };
+                        if bind_descriptor_sets {
+                            let descriptor_set = self.descriptor_sets[texture_id.id()];
+                            unsafe {
+                                vk_context.device().cmd_bind_descriptor_sets(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    self.pipeline_layout,
+                                    0,
+                                    &[descriptor_set],
+                                    &[],
+                                )
+                            };
+                            current_texture_id = Some(texture_id);
                         }
 
                         unsafe {
