@@ -61,15 +61,21 @@ pub fn create_vulkan_descriptor_set_layout(
     device: &Device,
 ) -> RendererResult<vk::DescriptorSetLayout> {
     log::debug!("Creating vulkan descriptor set layout");
-    let bindings = [vk::DescriptorSetLayoutBinding::builder()
+
+    let binding_flags = [vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
+    let mut binding_flags_create_info =
+        vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder().binding_flags(&binding_flags);
+
+    let bindings = [*vk::DescriptorSetLayoutBinding::builder()
         .binding(0)
         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
         .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-        .build()];
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
 
-    let descriptor_set_create_info =
-        vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
+    let descriptor_set_create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+        .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
+        .bindings(&bindings)
+        .push_next(&mut binding_flags_create_info);
 
     unsafe { Ok(device.create_descriptor_set_layout(&descriptor_set_create_info, None)?) }
 }
@@ -252,6 +258,7 @@ pub fn create_vulkan_descriptor_sets(
             descriptor_count: count as u32,
         }];
         let create_info = vk::DescriptorPoolCreateInfo::builder()
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .pool_sizes(&sizes)
             .max_sets(count as u32);
         unsafe { device.create_descriptor_pool(&create_info, None)? }
