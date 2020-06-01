@@ -64,6 +64,9 @@ pub struct Renderer {
     textures: Textures<(vk::ImageView, vk::Sampler)>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_sets_age: u32,
+    in_flight_descriptor_sets: Vec<Vec<vk::DescriptorSet>>,
+    in_flight_descriptor_sets_ages: Vec<u32>,
     in_flight_frames: usize,
     frames: Option<Frames>,
     destroyed: bool,
@@ -138,8 +141,32 @@ impl Renderer {
         };
 
         // Descriptor sets
-        let (descriptor_pool, descriptor_sets) =
-            create_vulkan_descriptor_sets(vk_context.device(), descriptor_set_layout, 16)?;
+        let max_texture_count = 16;
+        let descriptor_pool = create_vulkan_descriptor_pool(
+            vk_context.device(),
+            (in_flight_frames + 1) * max_texture_count,
+        )?;
+
+        let descriptor_sets = create_vulkan_descriptor_sets(
+            vk_context.device(),
+            descriptor_pool,
+            descriptor_set_layout,
+            max_texture_count,
+        )?;
+        let descriptor_sets_age = 1;
+
+        let mut in_flight_descriptor_sets =
+            Vec::<Vec<vk::DescriptorSet>>::with_capacity(in_flight_frames);
+        for _ in 0..in_flight_frames {
+            in_flight_descriptor_sets.push(create_vulkan_descriptor_sets(
+                vk_context.device(),
+                descriptor_pool,
+                descriptor_set_layout,
+                max_texture_count,
+            )?)
+        }
+        // setting all ages to 0 will trigger a copy as the current "age" is 1
+        let in_flight_descriptor_sets_ages = vec![0; in_flight_frames];
 
         // Textures
         let mut textures = Textures::new();
@@ -162,6 +189,9 @@ impl Renderer {
             textures,
             descriptor_pool,
             descriptor_sets,
+            descriptor_sets_age,
+            in_flight_descriptor_sets,
+            in_flight_descriptor_sets_ages,
             in_flight_frames,
             frames: None,
             destroyed: false,
@@ -181,6 +211,7 @@ impl Renderer {
             image_view,
             sampler,
         );
+        self.descriptor_sets_age += 1;
         texture_id
     }
 
@@ -190,22 +221,20 @@ impl Renderer {
         texture_id: TextureId,
         image_view: vk::ImageView,
         sampler: vk::Sampler,
-    ) -> Option<(vk::ImageView, vk::Sampler)> {
-        let result = self.textures.replace(texture_id, (image_view, sampler));
+    ) {
+        self.textures.replace(texture_id, (image_view, sampler));
         update_vulkan_descriptor_set(
             vk_context.device(),
             self.descriptor_sets[texture_id.id()],
             image_view,
             sampler,
         );
-        result
+        self.descriptor_sets_age += 1;
     }
 
-    pub fn remove_texture<C: RendererVkContext>(
-        &mut self,
-        texture_id: TextureId,
-    ) -> Option<(vk::ImageView, vk::Sampler)> {
-        self.textures.remove(texture_id)
+    pub fn remove_texture<C: RendererVkContext>(&mut self, texture_id: TextureId) {
+        self.textures.remove(texture_id);
+        self.descriptor_sets_age += 1;
     }
 
     /// Record commands required to render the gui.RendererError.
@@ -243,7 +272,19 @@ impl Renderer {
                 .replace(Frames::new(vk_context, draw_data, self.in_flight_frames)?);
         }
 
-        let mesh = self.frames.as_mut().unwrap().next();
+        let (frame_index, mesh) = self.frames.as_mut().unwrap().next();
+
+        let age = self.descriptor_sets_age;
+        if self.in_flight_descriptor_sets_ages[frame_index] != age {
+            copy_vulkan_descriptor_sets(
+                vk_context.device(),
+                self.descriptor_sets.len(),
+                &self.descriptor_sets,
+                &self.in_flight_descriptor_sets[frame_index],
+            );
+            self.in_flight_descriptor_sets_ages[frame_index] = age;
+        }
+
         mesh.update(vk_context, draw_data)?;
 
         unsafe {
@@ -342,7 +383,8 @@ impl Renderer {
                             None => true,
                         };
                         if bind_descriptor_sets {
-                            let descriptor_set = self.descriptor_sets[texture_id.id()];
+                            let descriptor_set =
+                                self.in_flight_descriptor_sets[frame_index][texture_id.id()];
                             unsafe {
                                 vk_context.device().cmd_bind_descriptor_sets(
                                     command_buffer,
@@ -436,10 +478,10 @@ impl Frames {
         })
     }
 
-    fn next(&mut self) -> &mut Mesh {
-        let result = &mut self.meshes[self.index];
+    fn next(&mut self) -> (usize, &mut Mesh) {
+        let frame_index = self.index;
         self.index = (self.index + 1) % self.count;
-        result
+        (frame_index, &mut self.meshes[frame_index])
     }
 
     fn destroy(&mut self, device: &Device) {

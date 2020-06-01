@@ -239,11 +239,10 @@ fn read_shader_from_source(source: &[u8]) -> RendererResult<Vec<u32>> {
     Ok(ash::util::read_spv(&mut cursor)?)
 }
 
-pub fn create_vulkan_descriptor_sets(
+pub fn create_vulkan_descriptor_pool(
     device: &Device,
-    descriptor_set_layout: vk::DescriptorSetLayout,
     count: usize,
-) -> RendererResult<(vk::DescriptorPool, Vec<vk::DescriptorSet>)> {
+) -> RendererResult<vk::DescriptorPool> {
     log::debug!("Creating vulkan descriptor sets");
 
     let descriptor_pool = {
@@ -257,6 +256,17 @@ pub fn create_vulkan_descriptor_sets(
         unsafe { device.create_descriptor_pool(&create_info, None)? }
     };
 
+    Ok(descriptor_pool)
+}
+
+pub fn create_vulkan_descriptor_sets(
+    device: &Device,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    count: usize,
+) -> RendererResult<Vec<vk::DescriptorSet>> {
+    log::debug!("Creating vulkan descriptor sets");
+
     let descriptor_sets = {
         let set_layouts = vec![descriptor_set_layout; count];
         let allocate_info = vk::DescriptorSetAllocateInfo::builder()
@@ -266,7 +276,7 @@ pub fn create_vulkan_descriptor_sets(
         unsafe { device.allocate_descriptor_sets(&allocate_info)? }
     };
 
-    Ok((descriptor_pool, descriptor_sets))
+    Ok(descriptor_sets)
 }
 
 pub fn update_vulkan_descriptor_set(
@@ -292,6 +302,29 @@ pub fn update_vulkan_descriptor_set(
             .build()];
         device.update_descriptor_sets(&writes, &[])
     }
+}
+
+pub fn copy_vulkan_descriptor_sets(
+    device: &Device,
+    count: usize,
+    src_descriptor_sets: &[vk::DescriptorSet],
+    dst_descriptor_sets: &[vk::DescriptorSet],
+) {
+    log::debug!("Copying vulkan descriptor set");
+
+    let mut copies = Vec::with_capacity(count);
+    for i in 0..count {
+        copies.push(
+            vk::CopyDescriptorSet::builder()
+                .src_set(src_descriptor_sets[i])
+                .src_binding(0)
+                .dst_set(dst_descriptor_sets[i])
+                .dst_binding(0)
+                .descriptor_count(1)
+                .build(),
+        );
+    }
+    unsafe { device.update_descriptor_sets(&[], &copies) }
 }
 
 mod buffer {
